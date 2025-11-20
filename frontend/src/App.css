@@ -20,6 +20,48 @@ header {
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 }
 
+.header-buttons {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.export-dropdown {
+  position: relative;
+}
+
+.export-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 5px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 5px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  min-width: 150px;
+  overflow: hidden;
+}
+
+.export-option {
+  display: block;
+  width: 100%;
+  padding: 10px 15px;
+  background: transparent;
+  border: none;
+  color: #e0e0e0;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.export-option:hover {
+  background: #252525;
+  color: #00ff88;
+}
+
 header h1 {
   color: #00ff88;
   font-size: 2rem;
@@ -37,10 +79,23 @@ header h1 {
   transition: all 0.3s;
 }
 
-.config-button:hover {
+.config-button:hover:not(:disabled) {
   background: #00cc6a;
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(0, 255, 136, 0.3);
+}
+
+.config-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-button {
+  background: #4a90e2;
+}
+
+.export-button:hover:not(:disabled) {
+  background: #357abd;
 }
 
 .modal-overlay {

@@ -697,6 +697,206 @@ app.get('/api/programs', (req, res) => {
   });
 });
 
+app.get('/api/export', (req, res) => {
+  const { format = 'csv' } = req.query;
+  const query = 'SELECT * FROM programs ORDER BY name ASC';
+  
+  db.all(query, [], (err, programs) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    
+    const programsWithScope = programs.map((program) => {
+      return new Promise((resolve) => {
+        db.all(
+          'SELECT * FROM scope_targets WHERE program_handle = ?',
+          [program.handle],
+          (scopeErr, scopeTargets) => {
+            if (scopeErr) {
+              resolve({ ...program, scope_targets: [] });
+            } else {
+              // Fetch test results for each scope target
+              if (!scopeTargets || scopeTargets.length === 0) {
+                resolve({ ...program, scope_targets: [] });
+                return;
+              }
+              
+              const targetsWithTests = scopeTargets.map((target) => {
+                return new Promise((resolveTarget) => {
+                  db.get(
+                    'SELECT * FROM scope_target_tests WHERE scope_target_id = ? ORDER BY test_date DESC LIMIT 1',
+                    [target.id],
+                    (testErr, testResult) => {
+                      resolveTarget({
+                        ...target,
+                        test_result: testResult || null
+                      });
+                    }
+                  );
+                });
+              });
+              
+              Promise.all(targetsWithTests).then((targets) => {
+                resolve({ ...program, scope_targets: targets });
+              });
+            }
+          }
+        );
+      });
+    });
+    
+    Promise.all(programsWithScope).then((programsData) => {
+      if (format === 'pdf') {
+        // Generate PDF - require pdfkit only when needed
+        let PDFDocument;
+        try {
+          PDFDocument = require('pdfkit');
+        } catch (error) {
+          return res.status(500).json({ error: 'PDF export not available. Please install pdfkit: npm install pdfkit' });
+        }
+        
+        const doc = new PDFDocument({ margin: 50 });
+        
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename=hackerone-scan-report.pdf');
+        
+        doc.pipe(res);
+        
+        // Title
+        doc.fontSize(20).text('HackerOne Program Scan Report', { align: 'center' });
+        doc.moveDown();
+        doc.fontSize(12).text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
+        doc.moveDown(2);
+        
+        // Programs data
+        programsData.forEach((program, programIndex) => {
+          if (programIndex > 0) {
+            doc.addPage();
+          }
+          
+          // Program header
+          doc.fontSize(16).fillColor('#00ff88').text(program.name || program.handle, { underline: true });
+          doc.fillColor('#000000');
+          doc.moveDown(0.5);
+          
+          doc.fontSize(10);
+          doc.text(`Handle: ${program.handle || 'N/A'}`);
+          doc.text(`State: ${program.state || 'N/A'}`);
+          doc.text(`Submission State: ${program.submission_state || 'N/A'}`);
+          doc.text(`Offers Bounties: ${program.offers_bounties ? 'Yes' : 'No'}`);
+          doc.text(`Open Scope: ${program.open_scope ? 'Yes' : 'No'}`);
+          doc.text(`Fast Payments: ${program.fast_payments ? 'Yes' : 'No'}`);
+          doc.text(`Safe Harbor: ${program.gold_standard_safe_harbor ? 'Yes' : 'No'}`);
+          doc.moveDown();
+          
+          // Scope targets
+          if (program.scope_targets && program.scope_targets.length > 0) {
+            doc.fontSize(12).fillColor('#00ff88').text('Scope Targets:', { underline: true });
+            doc.fillColor('#000000');
+            doc.moveDown(0.5);
+            
+            program.scope_targets.forEach((target, idx) => {
+              if (idx > 0) doc.moveDown(0.3);
+              doc.fontSize(9);
+              doc.text(`Type: ${target.target_type || 'Unknown'}`, { indent: 20 });
+              doc.text(`Target: ${target.target || 'N/A'}`, { indent: 20 });
+              doc.text(`Bounty Eligible: ${target.eligible_for_bounty ? 'Yes' : 'No'}`, { indent: 20 });
+              doc.text(`Submission Eligible: ${target.eligible_for_submission ? 'Yes' : 'No'}`, { indent: 20 });
+              if (target.test_result) {
+                if (target.test_result.status_code) {
+                  doc.text(`Status Code: ${target.test_result.status_code}`, { indent: 20 });
+                }
+                doc.text(`Has Auth: ${target.test_result.has_auth_indicators ? 'Yes' : 'No'}`, { indent: 20 });
+              }
+              if (target.severity_rating) {
+                doc.text(`Severity: ${target.severity_rating}`, { indent: 20 });
+              }
+            });
+          } else {
+            doc.fontSize(10).text('No scope targets available');
+          }
+        });
+        
+        doc.end();
+      } else {
+        // Generate CSV
+        const csvRows = [];
+        
+        // Header row
+        csvRows.push([
+          'Program Handle',
+          'Program Name',
+          'State',
+          'Submission State',
+          'Offers Bounties',
+          'Open Scope',
+          'Fast Payments',
+          'Safe Harbor',
+          'Scope Target Type',
+          'Scope Target',
+          'Bounty Eligible',
+          'Submission Eligible',
+          'Status Code',
+          'Has Auth Indicators',
+          'Severity Rating'
+        ].join(','));
+        
+        // Data rows
+        programsData.forEach((program) => {
+          if (program.scope_targets && program.scope_targets.length > 0) {
+            program.scope_targets.forEach((target) => {
+              const row = [
+                `"${program.handle || ''}"`,
+                `"${program.name || ''}"`,
+                `"${program.state || ''}"`,
+                `"${program.submission_state || ''}"`,
+                program.offers_bounties ? 'Yes' : 'No',
+                program.open_scope ? 'Yes' : 'No',
+                program.fast_payments ? 'Yes' : 'No',
+                program.gold_standard_safe_harbor ? 'Yes' : 'No',
+                `"${target.target_type || ''}"`,
+                `"${target.target || ''}"`,
+                target.eligible_for_bounty ? 'Yes' : 'No',
+                target.eligible_for_submission ? 'Yes' : 'No',
+                target.test_result?.status_code || '',
+                target.test_result?.has_auth_indicators ? 'Yes' : 'No',
+                `"${target.severity_rating || ''}"`
+              ];
+              csvRows.push(row.join(','));
+            });
+          } else {
+            // Program with no scope targets
+            const row = [
+              `"${program.handle || ''}"`,
+              `"${program.name || ''}"`,
+              `"${program.state || ''}"`,
+              `"${program.submission_state || ''}"`,
+              program.offers_bounties ? 'Yes' : 'No',
+              program.open_scope ? 'Yes' : 'No',
+              program.fast_payments ? 'Yes' : 'No',
+              program.gold_standard_safe_harbor ? 'Yes' : 'No',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              ''
+            ];
+            csvRows.push(row.join(','));
+          }
+        });
+        
+        const csvContent = csvRows.join('\n');
+        
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=hackerone-scan-report.csv');
+        res.send(csvContent);
+      }
+    });
+  });
+});
+
 app.get('/api/programs/stats', (req, res) => {
   db.get('SELECT COUNT(*) as total FROM programs', (err, row) => {
     if (err) {

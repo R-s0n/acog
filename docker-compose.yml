@@ -6,7 +6,6 @@ services:
     volumes:
       - ./backend:/app
       - /app/node_modules
-      - ./h1-programs.md:/app/h1-programs.md:ro
     environment:
       - NODE_ENV=production
       - FRESH_DATABASE=true

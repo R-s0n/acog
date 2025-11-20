@@ -38,6 +38,7 @@ function App() {
   const [sortDirection, setSortDirection] = useState('asc');
   const [scopeFilters, setScopeFilters] = useState({});
   const [scopeSort, setScopeSort] = useState({});
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   useEffect(() => {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -87,6 +88,18 @@ function App() {
       loadPrograms();
     }
   }, [scanning, progress.status]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showExportMenu && !event.target.closest('.export-dropdown')) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showExportMenu]);
 
   const loadCredentials = async () => {
     try {
@@ -302,6 +315,28 @@ function App() {
     }
   };
 
+  const exportReport = async (format = 'csv') => {
+    try {
+      setShowExportMenu(false);
+      const response = await axios.get(`${API_URL}/api/export?format=${format}`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      const extension = format === 'pdf' ? 'pdf' : 'csv';
+      link.setAttribute('download', `hackerone-scan-report-${new Date().toISOString().split('T')[0]}.${extension}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting report:', error);
+      showToast('Error exporting report. Please try again.', 'error');
+    }
+  };
+
   return (
     <div className="app">
       {toast.show && (
@@ -504,12 +539,33 @@ function App() {
       <div className="container">
         <header>
           <h1>HackerOne Program Scanner</h1>
-          <button 
-            onClick={() => setShowModal(true)} 
-            className="config-button"
-          >
-            New Scan
-          </button>
+          <div className="header-buttons">
+            <div className="export-dropdown">
+              <button 
+                onClick={() => setShowExportMenu(!showExportMenu)} 
+                className="config-button export-button"
+                disabled={programs.length === 0}
+              >
+                Export Report ▼
+              </button>
+              {showExportMenu && (
+                <div className="export-menu">
+                  <button onClick={() => exportReport('csv')} className="export-option">
+                    Export as CSV
+                  </button>
+                  <button onClick={() => exportReport('pdf')} className="export-option">
+                    Export as PDF
+                  </button>
+                </div>
+              )}
+            </div>
+            <button 
+              onClick={() => setShowModal(true)} 
+              className="config-button"
+            >
+              New Scan
+            </button>
+          </div>
         </header>
 
         <div className="filters">
