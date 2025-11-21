@@ -90,10 +90,43 @@ db.serialize(() => {
     test_date DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (scope_target_id) REFERENCES scope_targets(id) ON DELETE CASCADE
   )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS xss_analysis (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_target_id INTEGER NOT NULL,
+    is_good_reflected_stored_target INTEGER DEFAULT 0,
+    is_good_dom_target INTEGER DEFAULT 0,
+    reflected_stored_score INTEGER DEFAULT 0,
+    dom_score INTEGER DEFAULT 0,
+    reflected_stored_reason TEXT,
+    dom_reason TEXT,
+    status_code INTEGER,
+    frameworks TEXT,
+    has_csp INTEGER DEFAULT 0,
+    csp_strict INTEGER DEFAULT 0,
+    has_waf INTEGER DEFAULT 0,
+    has_auth INTEGER DEFAULT 0,
+    custom_js_count INTEGER DEFAULT 0,
+    dangerous_sinks_count INTEGER DEFAULT 0,
+    sources_count INTEGER DEFAULT 0,
+    prototype_pollution_count INTEGER DEFAULT 0,
+    vulnerable_libraries TEXT,
+    analysis_data TEXT,
+    test_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (scope_target_id) REFERENCES scope_targets(id) ON DELETE CASCADE
+  )`);
 });
 
 let wss = null;
-let currentScanProgress = { current: 0, total: 0, status: 'idle', message: '' };
+let currentScanProgress = { 
+  current: 0, 
+  total: 0, 
+  status: 'idle', 
+  message: '',
+  currentScopeTarget: null,
+  currentScopeTargetNumber: 0,
+  totalScopeTargets: 0
+};
 
 // Function to test a URL scope target
 async function testUrlTarget(scopeTargetId, url, programHandle) {
@@ -188,6 +221,447 @@ async function testUrlTarget(scopeTargetId, url, programHandle) {
       }
     );
   }
+}
+
+async function analyzeXSSTarget(scopeTargetId, url) {
+  try {
+    let testUrl = url.trim();
+    if (!testUrl.startsWith('http://') && !testUrl.startsWith('https://')) {
+      testUrl = 'https://' + testUrl;
+    }
+
+    console.log(`[XSS-ANALYSIS] Analyzing: ${testUrl}`);
+    
+    const response = await axios.get(testUrl, {
+      timeout: 15000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    const statusCode = response.status;
+    if (statusCode !== 200) {
+      console.log(`[XSS-ANALYSIS] Non-200 status code: ${statusCode}`);
+      return;
+    }
+
+    const html = response.data || '';
+    const headers = response.headers || {};
+    
+    const frameworks = detectFrameworks(html);
+    const hasCsp = !!headers['content-security-policy'];
+    const cspHeader = headers['content-security-policy'] || '';
+    const cspStrict = analyzeCsp(cspHeader);
+    const hasWaf = detectWaf(headers);
+    const hasAuth = detectAuth(html);
+    const jsFiles = extractJsFiles(html);
+    const customJsCount = jsFiles.length;
+    
+    const domAnalysis = analyzeDomPatterns(html);
+    const vulnerableLibs = detectVulnerableLibraries(html);
+    
+    const reflectedStoredResult = evaluateReflectedStoredTarget(frameworks, hasCsp, cspStrict, hasWaf, hasAuth, customJsCount, headers);
+    const domBasedResult = evaluateDomBasedTarget(domAnalysis, customJsCount, hasCsp, cspStrict, vulnerableLibs, hasWaf, hasAuth, headers);
+    
+    const analysisData = {
+      frameworks,
+      jsFiles: jsFiles.slice(0, 10),
+      domAnalysis,
+      cspHeader: cspHeader.substring(0, 500),
+      headers: {
+        'x-frame-options': headers['x-frame-options'],
+        'x-content-type-options': headers['x-content-type-options']
+      }
+    };
+    
+    db.run(
+      `INSERT INTO xss_analysis (
+        scope_target_id, is_good_reflected_stored_target, is_good_dom_target,
+        reflected_stored_reason, dom_reason, reflected_stored_score, dom_score,
+        status_code, frameworks, has_csp, csp_strict, has_waf, has_auth, custom_js_count,
+        dangerous_sinks_count, sources_count, prototype_pollution_count,
+        vulnerable_libraries, analysis_data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        scopeTargetId,
+        reflectedStoredResult.isGoodTarget ? 1 : 0,
+        domBasedResult.isGoodTarget ? 1 : 0,
+        reflectedStoredResult.reason,
+        domBasedResult.reason,
+        reflectedStoredResult.score,
+        domBasedResult.score,
+        statusCode,
+        frameworks.join(','),
+        hasCsp ? 1 : 0,
+        cspStrict ? 1 : 0,
+        hasWaf ? 1 : 0,
+        hasAuth ? 1 : 0,
+        customJsCount,
+        domAnalysis.sinks,
+        domAnalysis.sources,
+        domAnalysis.prototypePollution,
+        JSON.stringify(vulnerableLibs),
+        JSON.stringify(analysisData)
+      ],
+      (err) => {
+        if (err) {
+          console.error(`[XSS-ANALYSIS] Error saving analysis for ${testUrl}:`, err);
+        } else {
+          console.log(`[XSS-ANALYSIS] Saved analysis for ${testUrl}: reflected=${reflectedStoredResult.isGoodTarget}, dom=${domBasedResult.isGoodTarget}`);
+        }
+      }
+    );
+
+  } catch (error) {
+    console.error(`[XSS-ANALYSIS] Error analyzing ${url}:`, error.message);
+  }
+}
+
+function detectFrameworks(html) {
+  const frameworks = [];
+  const htmlLower = html.toLowerCase();
+  
+  if (/react|_react|reactdom/.test(htmlLower)) frameworks.push('React');
+  if (/vue\.js|__vue__|vue-/.test(htmlLower)) frameworks.push('Vue');
+  if (/angular|ng-|_angular/.test(htmlLower)) frameworks.push('Angular');
+  if (/svelte/.test(htmlLower)) frameworks.push('Svelte');
+  if (/ember/.test(htmlLower)) frameworks.push('Ember');
+  
+  return frameworks;
+}
+
+function analyzeCsp(cspHeader) {
+  if (!cspHeader) return false;
+  const lower = cspHeader.toLowerCase();
+  return !(lower.includes("'unsafe-inline'") || lower.includes("'unsafe-eval'"));
+}
+
+function detectWaf(headers) {
+  const wafHeaders = ['x-waf', 'x-cdn', 'server', 'x-powered-by', 'cf-ray'];
+  const wafIndicators = ['cloudflare', 'akamai', 'imperva', 'f5', 'waf'];
+  
+  for (const header of wafHeaders) {
+    const value = (headers[header] || '').toLowerCase();
+    if (wafIndicators.some(indicator => value.includes(indicator))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function detectAuth(html) {
+  const htmlLower = html.toLowerCase();
+  const authKeywords = ['login', 'signin', 'password', 'csrf', 'auth-token', 'authenticate'];
+  return authKeywords.some(keyword => htmlLower.includes(keyword));
+}
+
+function extractJsFiles(html) {
+  const scriptPattern = /<script[^>]+src=["']([^"']+)["']/gi;
+  const matches = [];
+  let match;
+  while ((match = scriptPattern.exec(html)) !== null) {
+    matches.push(match[1]);
+  }
+  return matches;
+}
+
+function analyzeDomPatterns(html) {
+  const sinkPatterns = [
+    /\.innerHTML\s*[=+]/g,
+    /\.outerHTML\s*[=+]/g,
+    /\.insertAdjacentHTML\s*\(/g,
+    /document\.write(ln)?\s*\(/g,
+    /\beval\s*\(/g,
+    /new\s+Function\s*\(/g,
+    /setTimeout\s*\(\s*["']/g,
+    /setInterval\s*\(\s*["']/g,
+    /\.srcdoc\s*=/g,
+    /location\.(assign|replace|href)\s*[=(]/g,
+    /\.src\s*=.*?(location|hash|search|href)/g,
+    /\.href\s*=.*?(location|hash|search|href)/g,
+    /setAttribute\s*\(\s*["']on\w+/g
+  ];
+  
+  const sourcePatterns = [
+    /location\.hash/g,
+    /location\.search/g,
+    /location\.href/g,
+    /document\.referrer/g,
+    /window\.name/g,
+    /addEventListener\s*\(\s*["']message["']/g,
+    /new\s+URLSearchParams/g
+  ];
+  
+  const prototypePatterns = [
+    /Object\.assign\s*\(/g,
+    /__proto__/g,
+    /\[[\s'"]*constructor[\s'"]*\]/g,
+    /\.prototype\s*[=\[]/g,
+    /Object\.setPrototypeOf/g,
+    /Object\.create/g
+  ];
+  
+  const mergePatterns = [
+    /_\.merge\s*\(/g,
+    /\$\.extend\s*\(/g,
+    /deepmerge\s*\(/g,
+    /Object\.assign\s*\(/g,
+    /\{\.\.\..*?\}/g,
+    /function\s+\w*merge\w*\s*\(/gi
+  ];
+  
+  const frameworkUnsafePatterns = [
+    /dangerouslySetInnerHTML/g,
+    /v-html/g,
+    /ng-bind-html/g,
+    /\$sce\.trustAsHtml/g
+  ];
+  
+  const postMessageHandlers = (html.match(/addEventListener\s*\(\s*["']message["'].*?\{[\s\S]{0,500}?\}/g) || []);
+  const riskyPostMessage = postMessageHandlers.filter(handler => !(/origin\s*[!=]=/.test(handler))).length;
+  
+  const userInputPatterns = [
+    /<(input|textarea)[^>]*>/gi,
+    /<form[^>]*>/gi,
+    /contenteditable\s*=\s*["']true["']/gi
+  ];
+  
+  const hasUserInput = userInputPatterns.some(pattern => pattern.test(html));
+  const hasContentEditable = /contenteditable/gi.test(html);
+  
+  return {
+    sinks: countMatches(html, sinkPatterns),
+    sources: countMatches(html, sourcePatterns),
+    prototypePollution: countMatches(html, prototypePatterns),
+    mergeOperations: countMatches(html, mergePatterns),
+    frameworkUnsafe: countMatches(html, frameworkUnsafePatterns),
+    postMessageHandlers: postMessageHandlers.length,
+    riskyPostMessage,
+    inlineScripts: (html.match(/<script[^>]*>[\s\S]*?<\/script>/gi) || []).length,
+    hasUserInput,
+    hasContentEditable
+  };
+}
+
+function countMatches(text, patterns) {
+  let total = 0;
+  for (const pattern of patterns) {
+    const matches = text.match(pattern);
+    if (matches) total += matches.length;
+  }
+  return total;
+}
+
+function detectVulnerableLibraries(html) {
+  const libs = [];
+  const patterns = {
+    'jQuery': { pattern: /jQuery\s+v?(\d+\.\d+\.\d+)/i, vulnPrefixes: ['1.', '2.', '3.0.', '3.1.', '3.2.', '3.3.', '3.4.0', '3.4.1'] },
+    'lodash': { pattern: /lodash.*?(\d+\.\d+\.\d+)/i, vulnPrefixes: ['4.17.19', '4.17.18', '4.17.17', '4.17.16', '4.17.15'] }
+  };
+  
+  for (const [libName, config] of Object.entries(patterns)) {
+    const match = html.match(config.pattern);
+    if (match) {
+      const version = match[1];
+      if (config.vulnPrefixes.some(prefix => version.startsWith(prefix))) {
+        libs.push({ library: libName, version });
+      }
+    }
+  }
+  
+  return libs;
+}
+
+
+function evaluateReflectedStoredTarget(frameworks, hasCsp, cspStrict, hasWaf, hasAuth, jsFileCount, headers) {
+  const virtualDomFrameworks = frameworks.filter(f => 
+    ['React', 'Vue', 'Angular', 'Svelte'].includes(f)
+  );
+  
+  let score = 50;
+  const reasons = [];
+  
+  if (hasCsp) {
+    if (cspStrict) {
+      score -= 30;
+      reasons.push('Strict CSP (-30)');
+    } else {
+      score -= 10;
+      reasons.push('Weak CSP (-10)');
+    }
+  } else {
+    reasons.push('No CSP');
+  }
+  
+  if (hasWaf) {
+    score -= 25;
+    reasons.push('WAF detected (-25)');
+  }
+  
+  if (!hasAuth) {
+    score += 20;
+    reasons.push('No auth required (+20)');
+  } else {
+    score -= 5;
+    reasons.push('Auth required (-5)');
+  }
+  
+  if (virtualDomFrameworks.length === 0) {
+    score += 15;
+    reasons.push('No virtual DOM frameworks (+15)');
+  } else {
+    score -= 15;
+    reasons.push(`Virtual DOM frameworks: ${virtualDomFrameworks.join(', ')} (-15)`);
+  }
+  
+  if (jsFileCount < 5) {
+    score += 10;
+    reasons.push('Few JS files (+10)');
+  }
+  
+  const xFrame = (headers['x-frame-options'] || '').toLowerCase();
+  if (xFrame === 'deny' || xFrame === 'sameorigin') {
+    score -= 5;
+    reasons.push('X-Frame-Options (-5)');
+  }
+  
+  const contentType = (headers['content-type'] || '').toLowerCase();
+  if (!contentType.includes('nosniff')) {
+    score += 3;
+    reasons.push('No X-Content-Type-Options (+3)');
+  }
+  
+  score = Math.max(0, Math.min(100, score));
+  
+  const isGoodTarget = virtualDomFrameworks.length === 0 && score >= 50;
+  
+  return {
+    isGoodTarget,
+    score,
+    reason: isGoodTarget ? 
+      `Good target (${score}/100): ${reasons.slice(0, 6).join(' | ')}` :
+      `Not recommended (${score}/100): ${reasons.slice(0, 6).join(' | ')}`
+  };
+}
+
+function evaluateDomBasedTarget(domAnalysis, customJsCount, hasCsp, cspStrict, vulnerableLibs, hasWaf, hasAuth, headers) {
+  const reasons = [];
+  let score = 50;
+  
+  if (hasCsp) {
+    if (cspStrict) {
+      score -= 30;
+      reasons.push('Strict CSP (-30)');
+    } else {
+      score -= 10;
+      score += 3;
+      reasons.push('Weak CSP (-10, +3 for bypass potential)');
+    }
+  } else {
+    score += 5;
+    reasons.push('No CSP (+5)');
+  }
+  
+  if (hasWaf) {
+    score -= 25;
+    reasons.push('WAF detected (-25)');
+  }
+  
+  if (!hasAuth) {
+    score += 20;
+    reasons.push('No auth (+20)');
+  } else {
+    score -= 5;
+    reasons.push('Auth required (-5)');
+  }
+  
+  if (customJsCount === 0) {
+    return {
+      isGoodTarget: false,
+      score: Math.max(0, score),
+      reason: 'No custom JavaScript detected'
+    };
+  }
+  
+  score += Math.min(customJsCount * 2, 10);
+  reasons.push(`${customJsCount} JS files (+${Math.min(customJsCount * 2, 10)})`);
+  
+  if (domAnalysis.sinks > 0) {
+    const points = Math.min(domAnalysis.sinks * 2, 10);
+    score += points;
+    reasons.push(`${domAnalysis.sinks} sinks (+${points})`);
+  }
+  
+  if (domAnalysis.sources > 0) {
+    const points = Math.min(domAnalysis.sources * 2, 8);
+    score += points;
+    reasons.push(`${domAnalysis.sources} sources (+${points})`);
+  }
+  
+  if (domAnalysis.prototypePollution > 2) {
+    const points = Math.min(domAnalysis.prototypePollution, 10);
+    score += points;
+    reasons.push(`Prototype pollution (+${points})`);
+  }
+  
+  if (domAnalysis.mergeOperations > 1) {
+    const points = Math.min(domAnalysis.mergeOperations * 2, 10);
+    score += points;
+    reasons.push(`Merge operations (+${points})`);
+  }
+  
+  if (domAnalysis.riskyPostMessage > 0) {
+    const points = Math.min(domAnalysis.riskyPostMessage * 5, 15);
+    score += points;
+    reasons.push(`Risky postMessage (+${points})`);
+  }
+  
+  if (vulnerableLibs.length > 0) {
+    const points = Math.min(vulnerableLibs.length * 10, 20);
+    score += points;
+    reasons.push(`Vuln libs (+${points})`);
+  }
+  
+  if (domAnalysis.inlineScripts > 0) {
+    score += 8;
+    reasons.push(`Inline scripts (+8)`);
+  }
+  
+  if (domAnalysis.hasUserInput) {
+    score += 3;
+    reasons.push(`User input surfaces (+3)`);
+  }
+  
+  if (domAnalysis.hasContentEditable) {
+    score += 3;
+    reasons.push(`ContentEditable (+3)`);
+  }
+  
+  if (domAnalysis.frameworkUnsafe > 0) {
+    const points = Math.min(domAnalysis.frameworkUnsafe * 5, 10);
+    score += points;
+    reasons.push(`Framework unsafe (+${points})`);
+  }
+  
+  const xFrame = (headers['x-frame-options'] || '').toLowerCase();
+  if (xFrame === 'deny' || xFrame === 'sameorigin') {
+    score -= 5;
+    reasons.push('X-Frame-Options (-5)');
+  }
+  
+  score = Math.max(0, Math.min(100, score));
+  
+  const isGoodTarget = score >= 50;
+  
+  return {
+    isGoodTarget,
+    score,
+    reason: isGoodTarget ? 
+      `Good target (${score}/100): ${reasons.slice(0, 6).join(' | ')}` :
+      `Not recommended (${score}/100): ${reasons.slice(0, 6).join(' | ')}`
+  };
 }
 
 function broadcastProgress(progress) {
@@ -553,23 +1027,42 @@ app.post('/api/scan', async (req, res) => {
             }
           });
 
-          // Test URL scope targets
-          console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Testing URL scope targets for: ${handle}`);
-          currentScanProgress.message = 'Testing Scope Targets';
+          // Test URL scope targets and perform XSS analysis
+          console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Testing URL scope targets and performing XSS analysis for: ${handle}`);
+          currentScanProgress.message = 'Testing & Analyzing Scope Targets';
           broadcastProgress(currentScanProgress);
           
-          db.all('SELECT id, target_type, target FROM scope_targets WHERE program_handle = ? AND (target_type = "URL" OR target_type = "url" OR target_type LIKE "%url%" OR target LIKE "http://%" OR target LIKE "https://%")', [handle], async (err, urlTargets) => {
-            if (!err && urlTargets && urlTargets.length > 0) {
-              console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Found ${urlTargets.length} URL targets to test for: ${handle}`);
-              
-              for (const urlTarget of urlTargets) {
-                await testUrlTarget(urlTarget.id, urlTarget.target, handle);
-                // Small delay to avoid overwhelming servers
-                await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise((resolveUrlTests) => {
+            db.all('SELECT id, target_type, target FROM scope_targets WHERE program_handle = ? AND (target_type = "URL" OR target_type = "url" OR target_type LIKE "%url%" OR target LIKE "http://%" OR target LIKE "https://%")', [handle], async (err, urlTargets) => {
+              if (!err && urlTargets && urlTargets.length > 0) {
+                console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Found ${urlTargets.length} URL targets to test for: ${handle}`);
+                
+                currentScanProgress.totalScopeTargets = urlTargets.length;
+                
+                for (let i = 0; i < urlTargets.length; i++) {
+                  const urlTarget = urlTargets[i];
+                  currentScanProgress.message = 'Testing & Analyzing Scope Target';
+                  currentScanProgress.currentScopeTarget = urlTarget.target;
+                  currentScanProgress.currentScopeTargetNumber = i + 1;
+                  broadcastProgress(currentScanProgress);
+                  
+                  console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Testing ${i + 1}/${urlTargets.length}: ${urlTarget.target}`);
+                  
+                  await testUrlTarget(urlTarget.id, urlTarget.target, handle);
+                  await analyzeXSSTarget(urlTarget.id, urlTarget.target);
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+                currentScanProgress.currentScopeTarget = null;
+                currentScanProgress.currentScopeTargetNumber = 0;
+                currentScanProgress.totalScopeTargets = 0;
+                
+                console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Completed testing & XSS analysis for ${urlTargets.length} URL targets for: ${handle}`);
+              } else if (err) {
+                console.error(`[SCAN] Error fetching URL targets: ${err.message}`);
               }
-              
-              console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Completed testing URL targets for: ${handle}`);
-            }
+              resolveUrlTests();
+            });
           });
         } else {
           console.log(`[SCAN] [${index + 1}/${allPrograms.length}] No scope targets found for: ${handle}`);
@@ -582,6 +1075,9 @@ app.post('/api/scan', async (req, res) => {
       currentScanProgress.currentProgram = programName;
       currentScanProgress.message = '';
       currentScanProgress.scopeCount = null;
+      currentScanProgress.currentScopeTarget = null;
+      currentScanProgress.currentScopeTargetNumber = 0;
+      currentScanProgress.totalScopeTargets = 0;
       broadcastProgress(currentScanProgress);
       console.log(`[SCAN] [${index + 1}/${allPrograms.length}] Saved to database: ${handle}`);
     } catch (error) {
@@ -590,6 +1086,9 @@ app.post('/api/scan', async (req, res) => {
       if (program && program.attributes) {
         currentScanProgress.currentProgram = program.attributes.name || program.attributes.handle;
       }
+      currentScanProgress.currentScopeTarget = null;
+      currentScanProgress.currentScopeTargetNumber = 0;
+      currentScanProgress.totalScopeTargets = 0;
       broadcastProgress(currentScanProgress);
     }
   };
@@ -673,10 +1172,17 @@ app.get('/api/programs', (req, res) => {
                     'SELECT * FROM scope_target_tests WHERE scope_target_id = ? ORDER BY test_date DESC LIMIT 1',
                     [target.id],
                     (testErr, testResult) => {
-                      resolveTarget({
-                        ...target,
-                        test_result: testResult || null
-                      });
+                      db.get(
+                        'SELECT * FROM xss_analysis WHERE scope_target_id = ? ORDER BY test_date DESC LIMIT 1',
+                        [target.id],
+                        (xssErr, xssAnalysis) => {
+                          resolveTarget({
+                            ...target,
+                            test_result: testResult || null,
+                            xss_analysis: xssAnalysis || null
+                          });
+                        }
+                      );
                     }
                   );
                 });
@@ -727,10 +1233,17 @@ app.get('/api/export', (req, res) => {
                     'SELECT * FROM scope_target_tests WHERE scope_target_id = ? ORDER BY test_date DESC LIMIT 1',
                     [target.id],
                     (testErr, testResult) => {
-                      resolveTarget({
-                        ...target,
-                        test_result: testResult || null
-                      });
+                      db.get(
+                        'SELECT * FROM xss_analysis WHERE scope_target_id = ? ORDER BY test_date DESC LIMIT 1',
+                        [target.id],
+                        (xssErr, xssAnalysis) => {
+                          resolveTarget({
+                            ...target,
+                            test_result: testResult || null,
+                            xss_analysis: xssAnalysis || null
+                          });
+                        }
+                      );
                     }
                   );
                 });

@@ -21,7 +21,8 @@ function App() {
     offers_bounties: '',
     open_scope: '',
     currency: '',
-    fast_payments: ''
+    fast_payments: '',
+    scope_target_type: ''
   });
   const [ws, setWs] = useState(null);
   const [expandedPrograms, setExpandedPrograms] = useState(new Set());
@@ -39,6 +40,8 @@ function App() {
   const [scopeFilters, setScopeFilters] = useState({});
   const [scopeSort, setScopeSort] = useState({});
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [hasLoadedPrograms, setHasLoadedPrograms] = useState(false);
+  const [expandedScopeTargets, setExpandedScopeTargets] = useState(new Set());
 
   useEffect(() => {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -129,17 +132,18 @@ function App() {
       setPrograms(loadedPrograms);
       
       if (loadedPrograms.length > 0) {
+        setHasLoadedPrograms(true);
         if (showModal) {
           setShowModal(false);
         }
       } else {
-        if (!showModal && !scanning) {
+        if (!hasLoadedPrograms && !showModal && !scanning && !searchTerm && Object.values(filters).every(f => f === '')) {
           setShowModal(true);
         }
       }
     } catch (error) {
       console.error('Error loading programs:', error);
-      if (!showModal && !scanning) {
+      if (!hasLoadedPrograms && !showModal && !scanning) {
         setShowModal(true);
       }
     }
@@ -170,6 +174,37 @@ function App() {
           if (filters.open_scope !== '' && program.open_scope !== (filters.open_scope === 'true')) return false;
           if (filters.currency && program.currency !== filters.currency) return false;
           if (filters.fast_payments !== '' && program.fast_payments !== (filters.fast_payments === 'true')) return false;
+          
+          if (filters.scope_target_type) {
+            if (!program.scope_targets || program.scope_targets.length === 0) return false;
+            
+            const hasTargetType = program.scope_targets.some(target => {
+              const targetType = target.target_type?.toLowerCase() || '';
+              const targetValue = target.target?.toLowerCase() || '';
+              
+              switch (filters.scope_target_type) {
+                case 'url':
+                  return targetType.includes('url') || targetValue.startsWith('http://') || targetValue.startsWith('https://') || targetValue.startsWith('*.') && targetValue.includes('.');
+                case 'wildcard':
+                  return targetValue.includes('*');
+                case 'mobile':
+                  return targetType.includes('android') || targetType.includes('ios') || targetType.includes('mobile') || targetType.includes('application');
+                case 'api':
+                  return targetType.includes('api');
+                case 'source_code':
+                  return targetType.includes('source') || targetType.includes('code') || targetType.includes('downloadable');
+                case 'hardware':
+                  return targetType.includes('hardware') || targetType.includes('iot');
+                case 'other':
+                  return targetType.includes('other');
+                default:
+                  return targetType === filters.scope_target_type;
+              }
+            });
+            
+            if (!hasTargetType) return false;
+          }
+          
           return true;
         });
       }
@@ -210,6 +245,14 @@ function App() {
             case 'scope_count':
               aVal = a.scope_targets?.length || 0;
               bVal = b.scope_targets?.length || 0;
+              break;
+            case 'xss_targets':
+              const aGoodReflected = a.scope_targets?.filter(t => t.xss_analysis?.is_good_reflected_stored_target === 1).length || 0;
+              const aGoodDom = a.scope_targets?.filter(t => t.xss_analysis?.is_good_dom_target === 1).length || 0;
+              const bGoodReflected = b.scope_targets?.filter(t => t.xss_analysis?.is_good_reflected_stored_target === 1).length || 0;
+              const bGoodDom = b.scope_targets?.filter(t => t.xss_analysis?.is_good_dom_target === 1).length || 0;
+              aVal = aGoodReflected + aGoodDom;
+              bVal = bGoodReflected + bGoodDom;
               break;
             default:
               return 0;
@@ -301,6 +344,18 @@ function App() {
         newSet.delete(programId);
       } else {
         newSet.add(programId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleScopeTarget = (targetId) => {
+    setExpandedScopeTargets(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(targetId)) {
+        newSet.delete(targetId);
+      } else {
+        newSet.add(targetId);
       }
       return newSet;
     });
@@ -519,12 +574,22 @@ function App() {
                 ) : (
                   <div className="progress-info">
                     {progress.currentProgram ? (
-                      <span>
-                        {progress.current} / {progress.total} - Scanning: {progress.currentProgram}
-                        {progress.message === 'Fetching Scope Targets' && progress.scopeCount !== null && progress.scopeCount !== undefined && (
-                          <span> ({progress.scopeCount} scope targets)</span>
+                      <div className="progress-details">
+                        <div className="progress-program">
+                          {progress.current} / {progress.total} - Scanning: <strong>{progress.currentProgram}</strong>
+                        </div>
+                        {progress.currentScopeTarget && progress.totalScopeTargets > 0 && (
+                          <div className="progress-scope-target">
+                            <span className="scope-target-url">{progress.currentScopeTarget}</span>
+                            <span className="scope-target-count">
+                              ({progress.currentScopeTargetNumber}/{progress.totalScopeTargets} Scope Targets)
+                            </span>
+                          </div>
                         )}
-                      </span>
+                        {progress.message === 'Fetching Scope Targets' && progress.scopeCount !== null && progress.scopeCount !== undefined && (
+                          <span className="scope-info">({progress.scopeCount} scope targets)</span>
+                        )}
+                      </div>
                     ) : (
                       <span>{progress.current} / {progress.total}</span>
                     )}
@@ -627,6 +692,19 @@ function App() {
               <option value="true">Fast Pay</option>
               <option value="false">No Fast Pay</option>
             </select>
+            <select
+              value={filters.scope_target_type}
+              onChange={(e) => handleFilterChange('scope_target_type', e.target.value)}
+            >
+              <option value="">All Scope Types</option>
+              <option value="url">URL Targets</option>
+              <option value="wildcard">Wildcard Targets</option>
+              <option value="mobile">Mobile Targets</option>
+              <option value="api">API Targets</option>
+              <option value="source_code">Source Code</option>
+              <option value="hardware">Hardware/IoT</option>
+              <option value="other">Other</option>
+            </select>
           </div>
         </div>
 
@@ -660,6 +738,9 @@ function App() {
                   <div className="program-safe-harbor sortable" onClick={() => handleSort('safe_harbor')}>
                     Safe Harbor {sortColumn === 'safe_harbor' && (sortDirection === 'asc' ? '↑' : '↓')}
                   </div>
+                  <div className="program-xss-targets sortable" onClick={() => handleSort('xss_targets')}>
+                    XSS Targets {sortColumn === 'xss_targets' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </div>
                   <div className="program-scope-count sortable" onClick={() => handleSort('scope_count')}>
                     Scopes {sortColumn === 'scope_count' && (sortDirection === 'asc' ? '↑' : '↓')}
                   </div>
@@ -668,6 +749,10 @@ function App() {
               </div>
               {filteredPrograms.map((program) => {
               const isExpanded = expandedPrograms.has(program.id);
+              const goodReflectedTargets = program.scope_targets?.filter(t => t.xss_analysis?.is_good_reflected_stored_target === 1).length || 0;
+              const goodDomTargets = program.scope_targets?.filter(t => t.xss_analysis?.is_good_dom_target === 1).length || 0;
+              const hasGoodXssTargets = goodReflectedTargets > 0 || goodDomTargets > 0;
+              
               return (
                 <div key={program.id} className="program-accordion">
                   <div 
@@ -691,6 +776,16 @@ function App() {
                       <div className="program-bounties">{program.offers_bounties ? 'Yes' : 'No'}</div>
                       <div className="program-scope">{program.open_scope ? 'Yes' : 'No'}</div>
                       <div className="program-safe-harbor">{program.gold_standard_safe_harbor ? 'Yes' : 'No'}</div>
+                      <div className="program-xss-targets">
+                        {hasGoodXssTargets ? (
+                          <div className="xss-targets-indicator">
+                            {goodReflectedTargets > 0 && <span className="xss-count-reflected">{goodReflectedTargets} R/S</span>}
+                            {goodDomTargets > 0 && <span className="xss-count-dom">{goodDomTargets} DOM</span>}
+                          </div>
+                        ) : (
+                          <span className="xss-none">-</span>
+                        )}
+                      </div>
                       <div className="program-scope-count">{program.scope_targets?.length || 0}</div>
                       <div className="program-expand">{isExpanded ? '−' : '+'}</div>
                     </div>
@@ -888,41 +983,264 @@ function App() {
                                     if (aVal > bVal) return sort.direction === 'asc' ? 1 : -1;
                                     return 0;
                                   });
+                                } else {
+                                  const getTypePriority = (type) => {
+                                    const typeLower = (type || '').toLowerCase();
+                                    if (typeLower === 'url' || typeLower.includes('url')) return 1;
+                                    if (typeLower === 'wildcard' || typeLower.includes('wildcard')) return 2;
+                                    if (typeLower === 'mobile' || typeLower.includes('mobile') || typeLower.includes('android') || typeLower.includes('ios')) return 3;
+                                    return 4;
+                                  };
+                                  
+                                  filtered.sort((a, b) => {
+                                    const aTypePriority = getTypePriority(a.target_type);
+                                    const bTypePriority = getTypePriority(b.target_type);
+                                    
+                                    if (aTypePriority !== bTypePriority) {
+                                      return aTypePriority - bTypePriority;
+                                    }
+                                    
+                                    const aIsGoodReflected = a.xss_analysis?.is_good_reflected_stored_target === 1;
+                                    const aIsGoodDom = a.xss_analysis?.is_good_dom_target === 1;
+                                    const bIsGoodReflected = b.xss_analysis?.is_good_reflected_stored_target === 1;
+                                    const bIsGoodDom = b.xss_analysis?.is_good_dom_target === 1;
+                                    
+                                    const aIsGood = aIsGoodReflected || aIsGoodDom;
+                                    const bIsGood = bIsGoodReflected || bIsGoodDom;
+                                    
+                                    if (aIsGood && !bIsGood) return -1;
+                                    if (!aIsGood && bIsGood) return 1;
+                                    
+                                    const aScore = Math.max(a.xss_analysis?.reflected_stored_score || 0, a.xss_analysis?.dom_score || 0);
+                                    const bScore = Math.max(b.xss_analysis?.reflected_stored_score || 0, b.xss_analysis?.dom_score || 0);
+                                    
+                                    if (aScore !== bScore) {
+                                      return bScore - aScore;
+                                    }
+                                    
+                                    return 0;
+                                  });
                                 }
+                                
+                                const isUrl = (str) => {
+                                  if (!str) return false;
+                                  const urlPattern = /^(https?:\/\/|http:\/\/|https:\/\/)/i;
+                                  return urlPattern.test(str) || (str.includes('.') && (str.startsWith('http://') || str.startsWith('https://') || str.includes('://')));
+                                };
+                                
+                                const getUrl = (str) => {
+                                  if (!str) return null;
+                                  if (str.startsWith('http://') || str.startsWith('https://')) return str;
+                                  if (isUrl(str)) return str;
+                                  if (str.includes('.') && !str.includes(' ')) return `https://${str}`;
+                                  return null;
+                                };
                                 
                                 return filtered.map((target, idx) => {
                                   const isOutOfScope = !target.eligible_for_bounty && !target.eligible_for_submission;
                                   const testResult = target.test_result;
+                                  const xssAnalysis = target.xss_analysis;
+                                  const targetKey = `${program.id}-${target.id}`;
+                                  const isExpanded = expandedScopeTargets.has(targetKey);
+                                  const hasXssData = xssAnalysis && xssAnalysis.status_code;
+                                  const targetUrl = getUrl(target.target);
+                                  
                                   return (
-                                    <div key={idx} className="scope-target-line">
-                                      <span className="scope-target-type">{target.target_type || 'Unknown'}</span>
-                                      <span className="scope-target-value">{target.target || 'N/A'}</span>
-                                      {isOutOfScope ? (
-                                        <span className="scope-badge scope-badge-out-of-scope">Out of Scope</span>
-                                      ) : (
-                                        <>
-                                          {target.eligible_for_bounty && (
-                                            <span className="scope-badge scope-badge-bounty">Bounty</span>
-                                          )}
-                                          {target.eligible_for_submission && (
-                                            <span className="scope-badge scope-badge-submission">Submission</span>
-                                          )}
-                                        </>
-                                      )}
-                                      {testResult && (
-                                        <>
-                                          {testResult.status_code && (
-                                            <span className={`scope-status-badge status-${Math.floor(testResult.status_code / 100)}xx`}>
-                                              {testResult.status_code}
-                                            </span>
-                                          )}
-                                          {testResult.has_auth_indicators === 1 && (
-                                            <span className="scope-badge scope-badge-auth">Auth</span>
-                                          )}
-                                        </>
-                                      )}
-                                      {target.severity_rating && (
-                                        <span className="scope-severity-inline">Severity: {target.severity_rating}</span>
+                                    <div key={idx} className="scope-target-accordion">
+                                      <div 
+                                        className="scope-target-line"
+                                        onClick={() => hasXssData && toggleScopeTarget(targetKey)}
+                                        style={{ cursor: hasXssData ? 'pointer' : 'default' }}
+                                      >
+                                        <span className="scope-target-type">{target.target_type || 'Unknown'}</span>
+                                        {targetUrl ? (
+                                          <a 
+                                            href={targetUrl} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer"
+                                            className="scope-target-value scope-target-link"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            {target.target || 'N/A'}
+                                          </a>
+                                        ) : (
+                                          <span className="scope-target-value">{target.target || 'N/A'}</span>
+                                        )}
+                                        {isOutOfScope ? (
+                                          <span className="scope-badge scope-badge-out-of-scope">Out of Scope</span>
+                                        ) : (
+                                          <>
+                                            {target.eligible_for_bounty && (
+                                              <span className="scope-badge scope-badge-bounty">Bounty</span>
+                                            )}
+                                            {target.eligible_for_submission && (
+                                              <span className="scope-badge scope-badge-submission">Submission</span>
+                                            )}
+                                          </>
+                                        )}
+                                        {testResult && (
+                                          <>
+                                            {testResult.status_code && (
+                                              <span className={`scope-status-badge status-${Math.floor(testResult.status_code / 100)}xx`}>
+                                                {testResult.status_code}
+                                              </span>
+                                            )}
+                                            {testResult.has_auth_indicators === 1 && (
+                                              <span className="scope-badge scope-badge-auth">Auth</span>
+                                            )}
+                                          </>
+                                        )}
+                                        {xssAnalysis && xssAnalysis.is_good_reflected_stored_target === 1 && (
+                                          <span className="scope-badge scope-badge-reflected-xss">✓ Reflected/Stored XSS</span>
+                                        )}
+                                        {xssAnalysis && xssAnalysis.is_good_dom_target === 1 && (
+                                          <span className="scope-badge scope-badge-dom-xss">✓ DOM XSS</span>
+                                        )}
+                                        {target.severity_rating && (
+                                          <span className="scope-severity-inline">Severity: {target.severity_rating}</span>
+                                        )}
+                                        {hasXssData && (
+                                          <span className="scope-expand-icon">{isExpanded ? '−' : '+'}</span>
+                                        )}
+                                      </div>
+                                      {isExpanded && xssAnalysis && (
+                                        <div className="scope-target-details">
+                                          <div className="xss-analysis-section">
+                                            <div className="xss-analysis-type">
+                                              <h4>🎯 Reflected/Stored XSS Analysis</h4>
+                                              <div className="xss-summary">
+                                                <div className="xss-score-badge" style={{
+                                                  background: xssAnalysis.reflected_stored_score >= 70 ? '#00ff88' : xssAnalysis.reflected_stored_score >= 50 ? '#ffaa00' : '#ff4444',
+                                                  color: '#000'
+                                                }}>
+                                                  Score: {xssAnalysis.reflected_stored_score}/100
+                                                </div>
+                                                <div className="xss-target-status">
+                                                  {xssAnalysis.is_good_reflected_stored_target ? '✓ Good Target' : '✗ Not Recommended'}
+                                                </div>
+                                              </div>
+                                              <div className="xss-reason">
+                                                <strong>Verdict:</strong> {xssAnalysis.reflected_stored_reason || 'No reason provided'}
+                                              </div>
+                                              <div className="xss-explanation">
+                                                <p><strong>Why?</strong> Reflected and stored XSS attacks work best on traditional server-side rendered applications. 
+                                                Virtual DOM frameworks (React, Vue, Angular, Svelte) automatically escape user input by default, making traditional XSS significantly harder. 
+                                                {xssAnalysis.is_good_reflected_stored_target ? 
+                                                  ' This target lacks modern frameworks that provide automatic XSS protection, making it a good candidate for testing reflected/stored XSS vulnerabilities.' :
+                                                  ' This target uses modern frontend frameworks with built-in XSS protections, making traditional reflected/stored XSS attacks much more difficult.'
+                                                }</p>
+                                              </div>
+                                              <div className="xss-metrics-grid">
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Frameworks Detected:</span>
+                                                  <span className="metric-value">{xssAnalysis.frameworks || 'None'}</span>
+                                                </div>
+                                              </div>
+                                            </div>
+                                            
+                                            <div className="xss-analysis-type">
+                                              <h4>⚡ DOM-Based XSS Analysis</h4>
+                                              <div className="xss-summary">
+                                                <div className="xss-score-badge" style={{
+                                                  background: xssAnalysis.dom_score >= 25 ? '#00ff88' : xssAnalysis.dom_score >= 15 ? '#ffaa00' : '#ff4444',
+                                                  color: '#000'
+                                                }}>
+                                                  Score: {xssAnalysis.dom_score}/100
+                                                </div>
+                                                <div className="xss-target-status">
+                                                  {xssAnalysis.is_good_dom_target ? '✓ Good Target' : '✗ Not Recommended'}
+                                                </div>
+                                              </div>
+                                              <div className="xss-reason">
+                                                <strong>Verdict:</strong> {xssAnalysis.dom_reason || 'No reason provided'}
+                                              </div>
+                                              <div className="xss-explanation">
+                                                <p><strong>Why?</strong> DOM-based XSS occurs when JavaScript code unsafely handles user-controllable data (like URL parameters). 
+                                                Good targets have dangerous sinks (innerHTML, eval, etc.), accessible sources (location.hash, etc.), and weak security policies. 
+                                                {xssAnalysis.is_good_dom_target ? 
+                                                  ' This target has promising indicators like dangerous JavaScript patterns, accessible sources, or vulnerable libraries that make DOM XSS more likely.' :
+                                                  ' This target lacks sufficient indicators (dangerous sinks, accessible sources, vulnerable patterns) to be a prime DOM XSS candidate.'
+                                                }</p>
+                                              </div>
+                                              <div className="xss-metrics-grid">
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Custom JavaScript Files:</span>
+                                                  <span className="metric-value">{xssAnalysis.custom_js_count || 0}</span>
+                                                  <span className="metric-description">Number of custom JS files (not libraries)</span>
+                                                </div>
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Dangerous Sinks:</span>
+                                                  <span className="metric-value">{xssAnalysis.dangerous_sinks_count || 0}</span>
+                                                  <span className="metric-description">innerHTML, eval, document.write, etc.</span>
+                                                </div>
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Untrusted Sources:</span>
+                                                  <span className="metric-value">{xssAnalysis.sources_count || 0}</span>
+                                                  <span className="metric-description">location.hash, location.search, etc.</span>
+                                                </div>
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Prototype Pollution Vectors:</span>
+                                                  <span className="metric-value">{xssAnalysis.prototype_pollution_count || 0}</span>
+                                                  <span className="metric-description">Object.assign, __proto__, etc.</span>
+                                                </div>
+                                              </div>
+                                            </div>
+                                            
+                                            <div className="xss-security-section">
+                                              <h4>🛡️ Security Posture</h4>
+                                              <div className="xss-metrics-grid">
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Content Security Policy:</span>
+                                                  <span className={`metric-value ${!xssAnalysis.has_csp ? 'metric-good' : xssAnalysis.csp_strict ? 'metric-bad' : 'metric-warning'}`}>
+                                                    {xssAnalysis.has_csp ? (xssAnalysis.csp_strict ? 'Strict ✓' : 'Weak ⚠') : 'None ✗'}
+                                                  </span>
+                                                  <span className="metric-description">
+                                                    {!xssAnalysis.has_csp ? 'No CSP - easier to exploit' : xssAnalysis.csp_strict ? 'Strict CSP - harder to bypass' : 'Weak CSP - may be bypassable'}
+                                                  </span>
+                                                </div>
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Web Application Firewall:</span>
+                                                  <span className={`metric-value ${xssAnalysis.has_waf ? 'metric-bad' : 'metric-good'}`}>
+                                                    {xssAnalysis.has_waf ? 'Detected ✓' : 'None ✗'}
+                                                  </span>
+                                                  <span className="metric-description">
+                                                    {xssAnalysis.has_waf ? 'WAF present - payloads may be blocked' : 'No WAF detected - less likely to block payloads'}
+                                                  </span>
+                                                </div>
+                                                <div className="xss-metric">
+                                                  <span className="metric-label">Authentication:</span>
+                                                  <span className="metric-value">{xssAnalysis.has_auth ? 'Detected' : 'None'}</span>
+                                                  <span className="metric-description">
+                                                    {xssAnalysis.has_auth ? 'Auth detected - may need login for full testing' : 'No auth detected - easier to test'}
+                                                  </span>
+                                                </div>
+                                                {xssAnalysis.vulnerable_libraries && xssAnalysis.vulnerable_libraries !== '[]' && (() => {
+                                                  try {
+                                                    const libs = JSON.parse(xssAnalysis.vulnerable_libraries);
+                                                    if (libs.length > 0) {
+                                                      return (
+                                                        <div className="xss-metric xss-vuln-libs-metric">
+                                                          <span className="metric-label">Vulnerable Libraries:</span>
+                                                          <div className="metric-value metric-good">
+                                                            {libs.map((lib, i) => (
+                                                              <span key={i} className="vuln-lib-badge">
+                                                                {lib.library} {lib.version}
+                                                              </span>
+                                                            ))}
+                                                          </div>
+                                                          <span className="metric-description">
+                                                            Known vulnerable versions detected - potential exploitation vectors
+                                                          </span>
+                                                        </div>
+                                                      );
+                                                    }
+                                                  } catch (e) {}
+                                                  return null;
+                                                })()}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
                                       )}
                                     </div>
                                   );

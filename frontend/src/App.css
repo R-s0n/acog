@@ -510,6 +510,54 @@ header h1 {
   font-size: 14px;
 }
 
+.progress-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.progress-program {
+  font-size: 14px;
+  color: #00ff88;
+}
+
+.progress-program strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.progress-scope-target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #b0b0b0;
+}
+
+.scope-target-url {
+  color: #4a90e2;
+  font-family: monospace;
+  font-size: 11px;
+  max-width: 600px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-target-count {
+  color: #00ff88;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.scope-info {
+  color: #888;
+  font-size: 12px;
+}
+
 .filters {
   background: #1a1a1a;
   padding: 20px;
@@ -618,7 +666,7 @@ header h1 {
 
 .program-header-content {
   display: grid;
-  grid-template-columns: 120px 1fr 100px 100px 100px 100px 100px 80px 40px;
+  grid-template-columns: 120px 1fr 100px 100px 100px 100px 100px 100px 80px 40px;
   gap: 15px;
   padding: 15px;
   align-items: center;
@@ -847,6 +895,17 @@ header h1 {
   white-space: nowrap;
 }
 
+.scope-target-link {
+  color: #00ff88;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.scope-target-link:hover {
+  color: #00cc6a;
+  text-decoration: underline;
+}
+
 .scope-badge {
   padding: 3px 6px;
   border-radius: 3px;
@@ -939,5 +998,260 @@ header h1 {
 .stats p {
   font-size: 16px;
   font-weight: 500;
+}
+
+.scope-target-accordion {
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.scope-target-accordion:last-child {
+  border-bottom: none;
+}
+
+.scope-expand-icon {
+  margin-left: auto;
+  font-size: 18px;
+  font-weight: bold;
+  color: #00ff88;
+}
+
+.scope-target-details {
+  padding: 15px 20px;
+  background: #0f0f0f;
+  border-top: 1px solid #2a2a2a;
+}
+
+.xss-analysis-section {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.xss-summary {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.xss-score-badge {
+  padding: 8px 16px;
+  border-radius: 5px;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.xss-target-status {
+  padding: 8px 16px;
+  border-radius: 5px;
+  font-weight: bold;
+  background: #1a1a1a;
+  color: #00ff88;
+}
+
+.xss-reason {
+  color: #e0e0e0;
+  line-height: 1.6;
+}
+
+.xss-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.xss-detail-item {
+  background: #1a1a1a;
+  padding: 10px;
+  border-radius: 5px;
+  color: #e0e0e0;
+}
+
+.xss-detail-item strong {
+  color: #00ff88;
+  margin-right: 8px;
+}
+
+.xss-vuln-libs {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vuln-lib-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  background: #ff4444;
+  color: #ffffff;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: bold;
+  margin-left: 5px;
+}
+
+.scope-badge-reflected-xss {
+  background: #00ff88;
+  color: #000000;
+  font-weight: bold;
+}
+
+.scope-badge-dom-xss {
+  background: #4a90e2;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.xss-analysis-type {
+  background: #1a1a1a;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 15px;
+}
+
+.xss-analysis-type h4 {
+  color: #00ff88;
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.xss-analysis-type:last-child {
+  margin-bottom: 0;
+}
+
+.xss-explanation {
+  background: #0f0f0f;
+  padding: 12px;
+  border-radius: 6px;
+  margin: 10px 0;
+  border-left: 3px solid #00ff88;
+}
+
+.xss-explanation p {
+  margin: 0;
+  color: #b0b0b0;
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.xss-explanation strong {
+  color: #00ff88;
+}
+
+.xss-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.xss-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #0f0f0f;
+  padding: 10px;
+  border-radius: 5px;
+}
+
+.metric-label {
+  color: #00ff88;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.metric-value {
+  color: #e0e0e0;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.metric-value.metric-good {
+  color: #00ff88;
+}
+
+.metric-value.metric-warning {
+  color: #ffaa00;
+}
+
+.metric-value.metric-bad {
+  color: #ff4444;
+}
+
+.metric-description {
+  color: #888;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.xss-security-section {
+  background: #1a1a1a;
+  padding: 15px;
+  border-radius: 8px;
+  margin-top: 15px;
+}
+
+.xss-security-section h4 {
+  color: #00ff88;
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.xss-vuln-libs-metric {
+  grid-column: 1 / -1;
+}
+
+.xss-vuln-libs-metric .metric-value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.program-xss-targets {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+
+.xss-targets-indicator {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.xss-count-reflected {
+  background: #00ff88;
+  color: #000;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.xss-count-dom {
+  background: #4a90e2;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.xss-none {
+  color: #666;
+  font-size: 12px;
 }
 
